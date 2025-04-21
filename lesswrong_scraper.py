@@ -145,6 +145,9 @@ class LessWrongScraper:
             return []
         
         posts = []
+        already_scraped = 0
+        total_posts_found = 0
+        
         # Find post blocks
         post_blocks = soup.select("h1, h2")
         for post_title in post_blocks:
@@ -154,9 +157,12 @@ class LessWrongScraper:
                 if not post_url.startswith("http"):
                     post_url = self.base_url + post_url
                 
+                total_posts_found += 1
+                
                 # Skip already scraped URLs
                 if post_url in self.scraped_urls:
                     self.log(f"Skipping already scraped post: {post_url}")
+                    already_scraped += 1
                     continue
                 
                 posts.append({
@@ -164,8 +170,8 @@ class LessWrongScraper:
                     "url": post_url
                 })
         
-        self.log(f"Found {len(posts)} new posts")
-        return posts
+        self.log(f"Found {len(posts)} new posts (skipped {already_scraped} already scraped posts, total on page: {total_posts_found})")
+        return posts, total_posts_found
     
     def scrape_post(self, post_url):
         """Scrape a single post and its comments"""
@@ -259,6 +265,8 @@ class LessWrongScraper:
         
         posts_since_last_save = 0
         total_new_posts = 0
+        empty_pages_count = 0
+        max_empty_pages = 3  # Stop after 3 consecutive empty pages
         
         try:
             # Initialize progress bar (unknown total)
@@ -278,12 +286,28 @@ class LessWrongScraper:
                 
                 # Get posts from current offset
                 list_url = f"{self.base_url}/?offset={offset}"
-                posts = self.get_posts_from_list(list_url)
+                posts_result = self.get_posts_from_list(list_url)
                 
-                # If no new posts were found, we've reached the end
-                if not posts:
-                    self.log(f"No more posts found at offset {offset}. Scraping complete.")
-                    break
+                # Unpack the result tuple
+                posts, total_posts_on_page = posts_result
+                
+                # If truly no posts were found on the page, count as empty page
+                if total_posts_on_page == 0:
+                    empty_pages_count += 1
+                    self.log(f"No posts found at offset {offset}. Empty page count: {empty_pages_count}")
+                    
+                    # If we've seen multiple empty pages in a row, we're probably at the end
+                    if empty_pages_count >= max_empty_pages:
+                        self.log(f"Found {max_empty_pages} consecutive empty pages. Scraping complete.")
+                        break
+                        
+                    # Try the next page even if this one was empty
+                    offset += 10  # Increment by a reasonable default number
+                    self.current_offset = offset
+                    continue
+                else:
+                    # Reset empty pages counter if we found posts
+                    empty_pages_count = 0
                 
                 # Scrape each post
                 for post in posts:
@@ -307,8 +331,15 @@ class LessWrongScraper:
                     # Be nice to the server
                     time.sleep(self.delay)
                 
-                # Move to next page
-                offset += len(posts)
+                # Even if all posts were already scraped, move to the next page
+                # Determine how much to increment offset based on total_posts_on_page
+                # If we found posts on this page, increment by that amount
+                if total_posts_on_page > 0:
+                    offset += total_posts_on_page
+                else:
+                    # Default increment if no posts were found
+                    offset += 10
+                    
                 self.current_offset = offset
                 self.log(f"Moving to offset {offset}")
                 
